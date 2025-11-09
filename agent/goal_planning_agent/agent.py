@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+# from dotenv import load_dotenv
 import json
 import os
-from typing import Any, AsyncGenerator, Dict, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from google.adk.agents import BaseAgent, SequentialAgent
 from google.adk.events import Event, EventActions
@@ -10,10 +11,11 @@ from google.genai import types
 
 from .llm import GeminiJsonResponder, GeminiPlanner
 
-
+# load_dotenv()
 _MODEL_NAME = os.getenv("AGENT_LLM_MODEL")
 _API_KEY = os.getenv("GOOGLE_API_KEY")
 _STRICT = os.getenv("AGENT_STRICT_LLM", "false").lower() in {"1", "true", "yes"}
+_APP_NAME = "goal_planning_agent"
 
 _planner = GeminiPlanner(model_name=_MODEL_NAME, api_key=_API_KEY)
 _json_responder = GeminiJsonResponder(model_name=_MODEL_NAME, api_key=_API_KEY)
@@ -33,6 +35,107 @@ def _deepcopy_json(value: Dict[str, Any]) -> Dict[str, Any]:
             return value
 
 
+def _get_input_obj(ctx) -> Any:
+    return getattr(ctx, "input", None)
+
+
+def _get_parts(ctx) -> List[Any]:
+    content = _get_input_obj(ctx)
+    parts = getattr(content, "parts", None)
+    if isinstance(parts, list):
+        return parts
+    return []
+
+
+def _part_text(part: Any) -> Optional[str]:
+    if hasattr(part, "text"):
+        text_value = getattr(part, "text")
+        if isinstance(text_value, str):
+            return text_value
+    if isinstance(part, dict):
+        text_value = part.get("text")
+        if isinstance(text_value, str):
+            return text_value
+    return None
+
+
+def _get_function_call(part: Any) -> Optional[Any]:
+    if hasattr(part, "function_call"):
+        return getattr(part, "function_call")
+    if isinstance(part, dict):
+        return part.get("function_call")
+    return None
+
+
+def _get_attr(obj: Any, key: str) -> Optional[Any]:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _extract_user_message(ctx) -> str:
+    content = _get_input_obj(ctx)
+    if content is None:
+        return ""
+
+    direct_message = getattr(content, "message", None)
+    if isinstance(direct_message, str) and direct_message.strip():
+        return direct_message.strip()
+
+    text_attr = getattr(content, "text", None)
+    if isinstance(text_attr, str) and text_attr.strip():
+        return text_attr.strip()
+
+    for part in _get_parts(ctx):
+        text_value = _part_text(part)
+        if text_value and text_value.strip():
+            return text_value.strip()
+    return ""
+
+
+def _extract_context(ctx) -> Dict[str, Any]:
+    parts = _get_parts(ctx)
+
+    def _call_args(name: str) -> Dict[str, Any]:
+        for part in parts:
+            fn = _get_function_call(part)
+            if not fn:
+                continue
+            fn_name = _get_attr(fn, "name")
+            if fn_name != name:
+                continue
+            args = _get_attr(fn, "args")
+            if isinstance(args, dict):
+                return args
+        return {}
+
+    goal_preview_ctx = _call_args("goal_preview_context")
+    time_ctx = _call_args("time_context")
+    task_ctx = _call_args("task_context")
+
+    return {
+        "goalPreview": goal_preview_ctx.get("goalPreview"),
+        "availableHoursLeft": time_ctx.get("availableHoursLeft"),
+        "upcomingTasks": task_ctx.get("upcomingTasks", []),
+    }
+
+
+def _sync_state_with_context(state: Dict[str, Any], context: Dict[str, Any]) -> None:
+    if not context:
+        return
+
+    state["context"] = _deepcopy_json(context)
+
+    goal_preview = context.get("goalPreview")
+    if goal_preview:
+        state["proposed_plan"] = _deepcopy_json(goal_preview)
+        iteration = goal_preview.get("iteration")
+        if isinstance(iteration, int):
+            state["iteration"] = iteration
+
+
 class CheckApprovalAgent(BaseAgent):
     def __init__(self, responder: GeminiJsonResponder, *, strict: bool = False) -> None:
         super().__init__(
@@ -44,8 +147,12 @@ class CheckApprovalAgent(BaseAgent):
 
     async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
         state = ctx.session.state
-        incoming_message = getattr(getattr(ctx, "input", None), "message", "") or ""
+        incoming_message = _extract_user_message(ctx)
         state["user_goal_text"] = incoming_message
+
+        context = _extract_context(ctx)
+        _sync_state_with_context(state, context)
+
         has_plan = bool(state.get("proposed_plan"))
 
         snapshot = _deepcopy_json(state)

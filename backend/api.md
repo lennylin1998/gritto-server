@@ -1476,13 +1476,6 @@ This version assumes:
 
 ⸻
 
-Exactly 💡— that’s an important addition.
-Your Chat Page needs an endpoint to fetch or create the user’s most recent active session (so the client knows which sessionId to use when calling /v1/agent/goal/session:message).
-
-We’ll define it in the same markdown format as your other API docs, consistent with the /v1/me and /v1/agent/... style.
-
-⸻
-
 💬 Chat Domain API
 
 Purpose
@@ -1638,12 +1631,203 @@ Chat Page startup logic:
 
 ⸻
 
-🤖 Agent Domain API (Refined — Context from Chat Domain)
+🤖 Agent Domain API (Final Version – with Remote Session Bootstrap)
 
 Purpose
+Execute a single reasoning step with the Goal Planning Agent.
+The backend converts user messages and context (goal preview, available time, upcoming tasks) into a structured ADK DTO and sends it to {AGENT_APP_URL}/run.
 
-Execute one reasoning step of the Goal Agent workflow.
-This endpoint receives the user’s message along with session and context info prepared by the Chat Domain, calls the Agent Service (/agent/run), interprets its response, and performs the required backend updates (e.g., save goal preview, finalize goal).
+These will be passed as structured function_call parts in the same ADK-compatible way as goal_preview_context,
+so your agent still receives a valid run payload, but with richer context for time planning and collision avoidance.
+
+⸻
+
+🧩 Final Agent Message DTO (Backend → Agent Service)
+
+Endpoint
+
+POST {AGENT_APP_URL}/run
+Content-Type: application/json
+Authorization: Bearer <IDENTITY_TOKEN>
+
+
+⸻
+
+DTO Schema
+
+interface AgentMessageDTO {
+  app_name: string;               // ADK app name ("goal_planning_agent")
+  user_id: string;                // Firestore user ID
+  session_id: string;             // Current backend session ID
+  new_message: {
+    role: "user";
+    parts: AgentMessagePart[];    // Array of text + structured context parts
+  };
+}
+
+type AgentMessagePart =
+  | { text: string }
+  | {
+      function_call: {
+        name:
+          | "goal_preview_context"
+          | "time_context"
+          | "task_context";
+        args: Record<string, any>;
+      };
+    };
+
+
+⸻
+
+Context Part Definitions
+
+🟣 1. Goal Preview Context
+
+Carries the latest GoalPreview JSON for reasoning/refinement.
+
+{
+  "function_call": {
+    "name": "goal_preview_context",
+    "args": {
+      "goalPreview": {
+        "goal": { "title": "Build Portfolio Website" },
+        "milestones": [
+          {
+            "title": "Design Phase",
+            "tasks": [
+              { "title": "UI Layout", "date": "2025-11-10", "estimatedHours": 4 }
+            ]
+          }
+        ],
+        "iteration": 1,
+        "status": "draft"
+      }
+    }
+  }
+}
+
+
+⸻
+
+🟢 2. Time Context
+
+Provides available remaining working hours to guide scheduling.
+
+{
+  "function_call": {
+    "name": "time_context",
+    "args": {
+      "availableHoursLeft": 18
+    }
+  }
+}
+
+
+⸻
+
+🟡 3. Task Context
+
+Lists user’s current scheduled tasks (used for time collision avoidance).
+
+{
+  "function_call": {
+    "name": "task_context",
+    "args": {
+      "upcomingTasks": [
+        {
+          "id": "t_302",
+          "title": "Team meeting",
+          "date": "2025-11-10T15:00:00Z",
+          "estimatedHours": 2,
+          "goalId": "g_015",
+          "done": false
+        },
+        {
+          "id": "t_303",
+          "title": "UX review",
+          "date": "2025-11-11T09:00:00Z",
+          "estimatedHours": 1
+        }
+      ]
+    }
+  }
+}
+
+
+⸻
+
+✅ Example — Full DTO (Backend → Agent)
+
+{
+  "app_name": "goal_planning_agent",
+  "user_id": "u_001",
+  "session_id": "sess_goal_001",
+  "new_message": {
+    "role": "user",
+    "parts": [
+      { "text": "Please add a design task next week, but avoid overlapping with existing meetings." },
+      {
+        "function_call": {
+          "name": "goal_preview_context",
+          "args": {
+            "goalPreview": {
+              "goal": { "title": "Build Portfolio Website" },
+              "milestones": [
+                {
+                  "title": "Design Phase",
+                  "tasks": [
+                    { "title": "UI Layout", "date": "2025-11-10", "estimatedHours": 4 }
+                  ]
+                }
+              ],
+              "iteration": 1,
+              "status": "draft"
+            }
+          }
+        }
+      },
+      {
+        "function_call": {
+          "name": "time_context",
+          "args": { "availableHoursLeft": 18 }
+        }
+      },
+      {
+        "function_call": {
+          "name": "task_context",
+          "args": {
+            "upcomingTasks": [
+              {
+                "id": "t_302",
+                "title": "Team meeting",
+                "date": "2025-11-10T15:00:00Z",
+                "estimatedHours": 2
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+}
+
+
+⸻
+
+🧠 How the Agent Uses These Context Parts
+
+def extract_context(ctx):
+    parts = ctx.input.parts
+    preview = next((p.function_call.args.get("goalPreview")
+                    for p in parts if hasattr(p, "function_call") and p.function_call.name == "goal_preview_context"), None)
+    hours = next((p.function_call.args.get("availableHoursLeft")
+                  for p in parts if hasattr(p, "function_call") and p.function_call.name == "time_context"), None)
+    tasks = next((p.function_call.args.get("upcomingTasks")
+                  for p in parts if hasattr(p, "function_call") and p.function_call.name == "task_context"), None)
+    return preview, hours, tasks
+
+Your PlanAgent or FinalizeAgent can then use these contexts to avoid time collisions and ensure tasks stay within the remaining allocation.
 
 ⸻
 
@@ -1651,36 +1835,23 @@ This endpoint receives the user’s message along with session and context info 
 
 POST /v1/agent/goal/session:message
 
-Description
-
-Handles a single message exchange within an existing, active goal-planning session.
-The session and context are guaranteed to exist, as they are managed by the Chat Domain.
-
 ⸻
 
-2️⃣ Expected Request
+2️⃣ Expected Request (Client → Backend)
 
 {
   "sessionId": "sess_goal_001",
-  "userId": "u_001",
-  "message": "Move the design phase to next week.",
-  "context": {
-    "availableHoursLeft": 18,
-    "upcomingTasks": [
-      {
-        "id": "t_301",
-        "title": "UI Layout",
-        "milestoneId": "m_120",
-        "goalId": "g_015",
-        "date": "2025-11-07T15:00:00Z",
-        "estimatedHours": 3,
-        "done": false
-      }
-    ]
+  "message": "Add a design task next week but don’t overlap with existing meetings.",
+  "goalPreview": {
+    "goal": { "title": "Build Portfolio Website" },
+    "milestones": [
+      { "title": "Design Phase", "tasks": [{ "title": "UI Layout", "date": "2025-11-10" }] }
+    ],
+    "iteration": 1
   }
 }
 
-Headers
+Headers:
 
 Authorization: Bearer <JWT>
 Content-Type: application/json
@@ -1688,104 +1859,111 @@ Content-Type: application/json
 
 ⸻
 
-3️⃣ Processing Logic
+3️⃣ Backend → Agent (Final DTO)
 
-Step	Description	Related Model / Function
-1️⃣	Validate JWT and payload; verify sessionId exists and belongs to user.	AuthMiddleware, SessionStateRepository.findById()
-2️⃣	Verify session is still active (sessionActive=true, state != 'finalized').	SessionState
-3️⃣	Forward message, session state, and context to Agent Service (/agent/run).	AgentService.invokeAgentRun()
-4️⃣	Receive agent output — reply, action, and new session state.	Agent Service Response
-5️⃣	Handle action.type: • "save_preview" → update/create GoalPreview. • "finalize_goal" → promote to Goal. • "none" → just log chat.	GoalPreviewRepository, GoalRepository
-6️⃣	Append both user and agent messages to chat history.	ChatRepository.append()
-7️⃣	Update SessionState with new state, iteration, sessionActive, and goalPreviewId.	SessionStateRepository.update()
-8️⃣	Return agent reply and updated session state to the client.	—
+{
+  "app_name": "goal_planning_agent",
+  "user_id": "u_001",
+  "session_id": "sess_goal_001",
+  "new_message": {
+    "role": "user",
+    "parts": [
+      { "text": "Add a design task next week but don’t overlap with existing meetings." },
+      {
+        "function_call": {
+          "name": "goal_preview_context",
+          "args": { "goalPreview": { "goal": { "title": "Build Portfolio Website" } } }
+        }
+      },
+      {
+        "function_call": {
+          "name": "time_context",
+          "args": { "availableHoursLeft": 18 }
+        }
+      },
+      {
+        "function_call": {
+          "name": "task_context",
+          "args": {
+            "upcomingTasks": [
+              {
+                "id": "t_301",
+                "title": "Team meeting",
+                "date": "2025-11-10T15:00:00Z",
+                "estimatedHours": 2
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+}
 
 
 ⸻
 
-4️⃣ Edge Cases
+4️⃣ Processing Logic
 
-Case	Behavior	Response
-Invalid or missing session	Reject request.	400 Bad Request
-Session inactive or finalized	Reject request.	409 Conflict
-Agent Service timeout	Return fallback error.	503 Service Unavailable
-Firestore write failure	Log and return internal error.	500 Internal Error
-Unauthorized access (JWT mismatch)	Reject request.	401 Unauthorized
+Step	Description	Related Function
+1️⃣	Validate JWT → extract userId.	authMiddleware
+2️⃣	Verify session ownership and status (sessionActive=true).	SessionStateRepository.findById()
+3️⃣	If session is new (iteration == 0), bootstrap remote session.	AgentService.initRemoteSession()
+4️⃣	Fetch availableHoursLeft + upcomingTasks for context.	ContextService.buildUserContext(userId)
+5️⃣	Build full DTO (text + goalPreview + time + tasks).	AgentService.buildDTO()
+6️⃣	Send DTO → {AGENT_APP_URL}/run.	AgentService.invokeAgentRun()
+7️⃣	Parse agent output and apply backend-side actions.	—
+8️⃣	Save messages in Chat + update SessionState.	ChatRepository.append(), SessionStateRepository.update()
+9️⃣	Return structured reply to client.	—
 
 
 ⸻
 
 5️⃣ Response Examples
 
-✅ 200 OK — Plan Generated / Refined
+✅ 200 OK — Plan Refined
 
 {
   "sessionId": "sess_goal_001",
-  "reply": "I’ve updated your plan as requested.",
+  "reply": "I’ve added the new design task without overlapping with your meeting.",
   "action": {
     "type": "save_preview",
     "payload": {
       "goalPreview": {
-        "id": "gp_456",
         "goal": { "title": "Build Portfolio Website" },
         "milestones": [
-          { "title": "Design Phase", "tasks": [] }
+          {
+            "title": "Design Phase",
+            "tasks": [
+              { "title": "UI Layout", "date": "2025-11-10" },
+              { "title": "Color Study", "date": "2025-11-11" }
+            ]
+          }
         ]
       }
     }
   },
   "state": {
-    "state": "plan_generated",
+    "state": "plan_iteration",
     "iteration": 2,
     "sessionActive": true
   }
 }
 
-
-⸻
-
 ✅ 200 OK — Goal Finalized
 
 {
   "sessionId": "sess_goal_001",
-  "reply": "I've created a goal for you: Build Portfolio Website 🎯",
+  "reply": "I've finalized your goal schedule with no time conflicts.",
   "action": {
     "type": "finalize_goal",
     "payload": {
-      "goalPreviewId": "gp_456",
+      "goalPreviewId": "gp_789",
       "goal": { "title": "Build Portfolio Website" },
       "milestones": [...]
     }
   },
-  "state": {
-    "state": "finalized",
-    "iteration": 3,
-    "sessionActive": false
-  }
-}
-
-
-⸻
-
-❌ 409 Conflict — Session Closed
-
-{
-  "error": {
-    "code": 409,
-    "message": "Session 'sess_goal_001' is finalized and cannot accept new messages."
-  }
-}
-
-
-⸻
-
-❌ 503 Service Unavailable — Agent Timeout
-
-{
-  "error": {
-    "code": 503,
-    "message": "Agent service unavailable. Please try again later."
-  }
+  "state": { "state": "finalized", "iteration": 3, "sessionActive": false }
 }
 
 
@@ -1794,66 +1972,60 @@ Unauthorized access (JWT mismatch)	Reject request.	401 Unauthorized
 6️⃣ Function Descriptions
 
 Function	Description
-AgentController.handleGoalSessionMessage(req, res)	Main endpoint handler. Validates request, calls Agent Service, applies action results.
-AgentService.invokeAgentRun(payload)	Sends IAM-authenticated POST to Python Agent Service /agent/run.
-GoalPreviewRepository.save()	Upserts preview when agent returns "save_preview".
-GoalRepository.promoteFromPreview()	Converts a preview into a finalized Goal, with associated Milestones and Tasks.
-ChatRepository.append()	Appends {sender, message} entries to Chat for the session.
-SessionStateRepository.update()	Updates session state, iteration, goalPreviewId, and timestamps.
+AgentController.handleGoalSessionMessage(req, res)	Main controller — validates, fetches context, builds DTO, invokes agent, and handles output.
+AgentService.buildDTO(userId, sessionId, message, goalPreview, context)	Builds ADK-compliant DTO with text, goal preview, time context, and tasks.
+AgentService.invokeAgentRun(payload)	Sends POST to {AGENT_APP_URL}/run.
+ContextService.buildUserContext(userId)	Returns { availableHoursLeft, upcomingTasks }.
+GoalPreviewRepository.save()	Upserts goal preview when agent refines plan.
+GoalRepository.promoteFromPreview()	Converts preview → finalized goal.
+ChatRepository.append()	Saves both user and agent messages.
+SessionStateRepository.update()	Persists updated iteration and state.
 
 
 ⸻
 
 7️⃣ Involved Models
 
-Model	Description
-SessionState	Tracks agent session lifecycle (state, iteration, active flag, goalPreviewId).
-Chat	Stores conversation messages.
-GoalPreview	Temporary goal draft created or refined by the agent.
-Goal, Milestone, Task	Created upon goal finalization.
-User	Linked via userId, used for access control.
+Model	Purpose
+SessionState	Tracks session lifecycle and current iteration.
+Chat	Holds user/agent message history.
+GoalPreview	Temporary structured plan.
+Goal, Milestone, Task	Finalized plan entities.
+User	Provides available hours.
+Task	Supplies upcomingTasks for context.
 
 
 ⸻
 
-8️⃣ Side Effects
-
-Trigger	Effect
-"save_preview"	Writes or updates GoalPreview, links to session.
-"finalize_goal"	Creates finalized Goal, closes session (sessionActive=false).
-"none"	Only appends chat messages, no DB mutations.
-Every turn	Updates session iteration and timestamp.
-
-
-⸻
-
-9️⃣ Security
+8️⃣ Security
 
 /**
- * SECURITY NOTE:
- * - Requires JWT authentication for user validation.
- * - Session IDs must belong to the authenticated user.
- * - The Python Agent Service (/agent/run) is protected by Cloud Run IAM.
- *   Only the backend Cloud Run service account can invoke it.
- * - Clients never interact with /agent/run directly.
+ * SECURITY NOTES:
+ * - JWT required for all client → backend calls.
+ * - Backend authenticates itself to Agent Service via IAM identity token.
+ * - Agent Service endpoints (/run, /apps/...) are private (Cloud Run IAM).
+ * - Session ownership verified per message.
  */
 
 
 ⸻
 
-🔟 Flow Summary
+9️⃣ Flow Summary
 
 Step	Component	Action	Result
-1️⃣	Chat Page	Supplies sessionId and context from /v1/agent/goal/session:latest	Frontend guaranteed to have valid session
-2️⃣	Backend	Validates session + JWT	Confirms session ownership
-3️⃣	Backend → Agent Service	Calls /agent/run with { message, context, state }	Agent performs reasoning
-4️⃣	Backend	Interprets action → updates Firestore	Persists data accordingly
-5️⃣	Backend → Client	Returns agent reply + new session state	Frontend updates UI and continues chat
+1️⃣	Frontend	POST /v1/agent/goal/session:message	Sends text and optional goal preview
+2️⃣	Backend	Fetch user context (time + tasks)	Adds to DTO
+3️⃣	Backend	POST {AGENT_APP_URL}/run	Sends ADK-compatible DTO
+4️⃣	Agent	Generates structured output JSON	Returns reply + action + state
+5️⃣	Backend	Applies persistence	Updates Firestore
+6️⃣	Frontend	Receives structured reply	Updates chat UI
 
 
 ⸻
 
-✅ Key Design Principle
-
-The Chat Domain owns session creation and context maintenance.
-The Agent Domain only interprets and executes reasoning results within an existing session.
+✅ Key Design Principles
+	•	All contextual signals (goalPreview, availableHoursLeft, upcomingTasks)
+are passed via ADK function_call parts, ensuring strict compliance.
+	•	Backend is responsible for transforming user messages and computing context.
+	•	The agent remains stateless — reasoning logic happens per request.
+	•	This enables intelligent plan scheduling that respects user time limits and avoids conflicts.

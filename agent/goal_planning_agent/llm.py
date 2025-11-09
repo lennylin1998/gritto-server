@@ -12,7 +12,7 @@ except Exception:  # pragma: no cover - local dev without google-genai
 
 
 SYSTEM_PROMPT = (
-    "You are Gritto's planning specialist. Generate structured JSON that matches the GoalPreview schema.\n"
+    "You are Gritto's gaol planning specialist. Generate structured JSON that matches the GoalPreview schema.\n"
     "The JSON must contain keys: goal, milestones (list), and optional id/summary.\n"
     "- goal: object with title, description (optional), category (optional).\n"
     "- milestones: list of objects with title, tasks (list).\n"

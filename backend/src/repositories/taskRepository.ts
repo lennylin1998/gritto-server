@@ -128,3 +128,13 @@ export async function listTasksByGoal(goalId: string): Promise<TaskRecord[]> {
     const snapshot = await db.collection(COLLECTION).where('goalId', '==', goalId).get();
     return snapshot.docs.map(mapTask);
 }
+
+export async function listIncompleteTasksByUser(userId: string): Promise<TaskRecord[]> {
+    const db = getFirestore();
+    const snapshot = await db
+        .collection(COLLECTION)
+        .where('userId', '==', userId)
+        .where('done', '==', false)
+        .get();
+    return snapshot.docs.map(mapTask).sort((a, b) => a.date.localeCompare(b.date));
+}

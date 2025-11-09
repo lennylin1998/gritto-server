@@ -41,9 +41,9 @@ import {
     findSessionById,
     updateSession,
 } from './repositories/sessionRepository';
-import { upsertGoalPreview } from './repositories/goalPreviewRepository';
+import { findGoalPreviewById, GoalPreviewRecord, upsertGoalPreview } from './repositories/goalPreviewRepository';
 import { buildUserContext } from './services/contextService';
-import { invokeAgentService } from './services/agentService';
+import { buildAgentInvocationPayload, initRemoteSession, invokeAgentService } from './services/agentService';
 import type {
     GoalRecord,
     GoalStatus,
@@ -245,6 +245,206 @@ function validateIsoDate(value: unknown): string {
     return parsed.toISOString().slice(0, 10);
 }
 
+type AgentGoalPlan = {
+    title?: string;
+    description?: string;
+    minHoursPerWeek?: number;
+    priority?: number;
+    color?: number;
+};
+
+type AgentTaskPlan = {
+    title?: string;
+    description?: string;
+    date?: string;
+    estimatedHours?: number;
+    done?: boolean;
+};
+
+type AgentMilestonePlan = {
+    title?: string;
+    description?: string;
+    status?: string;
+    tasks?: AgentTaskPlan[] | null;
+};
+
+type AgentPlanContainer = {
+    goal?: AgentGoalPlan;
+    milestones?: AgentMilestonePlan[] | null;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    if (value && typeof value === 'object') {
+        return value as Record<string, unknown>;
+    }
+    return undefined;
+}
+
+function readStringField(container: Record<string, unknown> | undefined, field: string): string | undefined {
+    if (!container) {
+        return undefined;
+    }
+    const value = container[field];
+    return typeof value === 'string' ? value : undefined;
+}
+
+function extractPlanContainer(
+    payload: Record<string, unknown>,
+    preview: GoalPreviewRecord | null
+): AgentPlanContainer {
+    const payloadWithGoalPreview = (payload as { goalPreview?: unknown }).goalPreview;
+    const payloadPlan = (payload as { plan?: unknown }).plan;
+    return (
+        (asRecord(payloadWithGoalPreview) as AgentPlanContainer | undefined) ??
+        (asRecord(payloadPlan) as AgentPlanContainer | undefined) ??
+        (preview?.data as AgentPlanContainer | undefined) ??
+        (payload as AgentPlanContainer) ??
+        {}
+    );
+}
+
+function computePlanTaskHours(milestones: AgentMilestonePlan[]): number {
+    return milestones.reduce((goalTotal, milestone) => {
+        const tasks = Array.isArray(milestone.tasks) ? milestone.tasks : [];
+        const taskHours = tasks.reduce((sum, task) => {
+            const hours =
+                typeof task?.estimatedHours === 'number' && Number.isFinite(task.estimatedHours)
+                    ? Math.max(0, task.estimatedHours)
+                    : 0;
+            return sum + hours;
+        }, 0);
+        return goalTotal + taskHours;
+    }, 0);
+}
+
+function coerceIsoDayString(value: unknown): string {
+    if (typeof value === 'string' && value.trim().length > 0) {
+        const parsed = new Date(value);
+        if (!Number.isNaN(parsed.valueOf())) {
+            return parsed.toISOString().slice(0, 10);
+        }
+    }
+    return new Date().toISOString().slice(0, 10);
+}
+
+async function finalizeGoalPlanFromAgentPayload(
+    user: UserRecord,
+    payload: Record<string, unknown>
+): Promise<{ goal: GoalRecord; milestoneIds: string[]; taskIds: string[]; goalPreviewId?: string }> {
+    const previewId =
+        readStringField(payload, 'goalPreviewId') ??
+        readStringField(asRecord((payload as { goalPreview?: unknown }).goalPreview), 'id');
+    const previewRecord = previewId ? await findGoalPreviewById(previewId) : null;
+    const planContainer = extractPlanContainer(payload, previewRecord);
+    const goalPlan = (planContainer.goal as AgentGoalPlan | undefined) ?? {};
+    const milestonePlans = Array.isArray(planContainer.milestones)
+        ? (planContainer.milestones as AgentMilestonePlan[])
+        : [];
+
+    const goalTitle =
+        typeof goalPlan.title === 'string' && goalPlan.title.trim().length > 0 ? goalPlan.title.trim() : 'Untitled Goal';
+    const description = typeof goalPlan.description === 'string' ? goalPlan.description : null;
+    const planHours =
+        typeof goalPlan.minHoursPerWeek === 'number' && Number.isFinite(goalPlan.minHoursPerWeek)
+            ? Math.max(0, goalPlan.minHoursPerWeek)
+            : computePlanTaskHours(milestonePlans);
+    const priority =
+        typeof goalPlan.priority === 'number' && Number.isFinite(goalPlan.priority)
+            ? Math.trunc(goalPlan.priority)
+            : 0;
+    const color = typeof goalPlan.color === 'number' && Number.isFinite(goalPlan.color) ? goalPlan.color : null;
+
+    const existingActiveHours = await sumActiveGoalHours(user.id);
+    const totalRequiredHours = existingActiveHours + planHours;
+    if (totalRequiredHours > user.availableHoursPerWeek) {
+        const conflicts = await collectActiveGoalSummaries(user.id);
+        conflicts.push({ goalId: 'pending', title: goalTitle, weeklyHours: planHours });
+        throw new ApiError(
+            409,
+            `Available hours (${user.availableHoursPerWeek}h/week) are insufficient for current active goals (${totalRequiredHours}h/week with new goal).`,
+            {
+                availableHoursPerWeek: user.availableHoursPerWeek,
+                requiredHoursPerWeek: totalRequiredHours,
+                conflictingGoals: conflicts,
+            }
+        );
+    }
+
+    const goal = await createGoal({
+        userId: user.id,
+        title: goalTitle,
+        description,
+        minHoursPerWeek: planHours,
+        priority,
+        color,
+    });
+
+    const milestoneIds: string[] = [];
+    const taskIds: string[] = [];
+
+    for (const milestonePlan of milestonePlans) {
+        const milestoneTitle =
+            typeof milestonePlan.title === 'string' && milestonePlan.title.trim().length > 0
+                ? milestonePlan.title.trim()
+                : 'Milestone';
+        const milestoneDescription = typeof milestonePlan.description === 'string' ? milestonePlan.description : null;
+        const milestone = await createMilestone({
+            goalId: goal.id,
+            title: milestoneTitle,
+            description: milestoneDescription,
+            parentMilestoneId: null,
+        });
+        milestoneIds.push(milestone.id);
+
+        const milestoneStatus =
+            typeof milestonePlan.status === 'string' && isValidMilestoneStatus(milestonePlan.status)
+                ? (milestonePlan.status as MilestoneStatus)
+                : undefined;
+        if (milestoneStatus && milestoneStatus !== milestone.status) {
+            await updateMilestone(milestone.id, { status: milestoneStatus });
+        }
+
+        const tasks = Array.isArray(milestonePlan.tasks) ? milestonePlan.tasks : [];
+        for (const taskPlan of tasks) {
+            const taskTitle =
+                typeof taskPlan?.title === 'string' && taskPlan.title.trim().length > 0
+                    ? taskPlan.title.trim()
+                    : 'Task';
+            const taskDescription = typeof taskPlan?.description === 'string' ? taskPlan.description : null;
+            const estimatedHours =
+                typeof taskPlan?.estimatedHours === 'number' && Number.isFinite(taskPlan.estimatedHours)
+                    ? Math.max(0, taskPlan.estimatedHours)
+                    : 0;
+            const date = coerceIsoDayString(taskPlan?.date);
+            const createdTask = await createTask({
+                goalId: goal.id,
+                milestoneId: milestone.id,
+                userId: user.id,
+                title: taskTitle,
+                description: taskDescription,
+                date,
+                estimatedHours,
+            });
+            taskIds.push(createdTask.id);
+            if (taskPlan?.done) {
+                await setTaskDone(createdTask.id, true);
+            }
+        }
+    }
+
+    return { goal, milestoneIds, taskIds, goalPreviewId: previewRecord?.id ?? previewId };
+}
+
+function extractPreviewPayload(
+    payload: Record<string, unknown> | undefined
+): { id?: string; data: Record<string, unknown> } {
+    const container = payload ?? {};
+    const nested = payload ? asRecord((payload as { goalPreview?: unknown }).goalPreview) : undefined;
+    const data = nested ?? container;
+    const previewId = readStringField(payload, 'goalPreviewId') ?? readStringField(data, 'id');
+    return { id: previewId, data };
+}
+
 app.get('/healthz', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -282,7 +482,6 @@ app.post('/v1/auth/google', async (req: Request, res: Response, next: NextFuncti
         }
         
         const token = signJwt({ userId: user.id, email: user.email });
-        console.log(token);
         res.status(statusCode).json({
             data: {
                 token,
@@ -828,7 +1027,7 @@ app.post(
             const userId = req.user?.userId;
             assert(userId, 401, 'Unauthorized');
 
-            const { sessionId, message, context: contextOverride, userId: payloadUserId } = req.body ?? {};
+            const { sessionId, message, goalPreview, userId: payloadUserId } = req.body ?? {};
             assert(typeof sessionId === 'string' && sessionId.trim().length > 0, 400, 'sessionId is required.');
             assert(typeof message === 'string' && message.trim().length > 0, 400, 'message is required.');
             if (payloadUserId !== undefined) {
@@ -840,8 +1039,16 @@ app.post(
             assert(session.userId === userId, 401, 'Unauthorized.');
             assert(session.sessionActive, 409, `Session '${sessionId}' is finalized and cannot accept new messages.`);
 
-            const context =
-                contextOverride && typeof contextOverride === 'object' ? (contextOverride as Record<string, unknown>) : session.context ?? {};
+            const user = await findUserById(userId);
+            assert(user, 404, 'User not found.');
+            const contextSnapshot = await buildUserContext(user);
+            const shouldInitRemoteSession = session.iteration === 0;
+
+            let previewForContext = asRecord(goalPreview);
+            if (!previewForContext && session.goalPreviewId) {
+                const storedPreview = await findGoalPreviewById(session.goalPreviewId);
+                previewForContext = storedPreview?.data ?? undefined;
+            }
 
             await appendChatMessage({
                 chatId: session.chatId,
@@ -850,19 +1057,19 @@ app.post(
                 message,
             });
 
-            const agentPayload = {
-                sessionId: session.id,
-                userId,
-                message,
-                context,
-                state: {
-                    state: session.state,
-                    iteration: session.iteration,
-                    sessionActive: session.sessionActive,
-                    goalPreviewId: session.goalPreviewId ?? null,
-                },
-            };
+            if (shouldInitRemoteSession) {
+                await initRemoteSession(userId, session.id);
+            }
 
+            const agentPayload = buildAgentInvocationPayload({
+                userId,
+                sessionId: session.id,
+                message,
+                goalPreview: previewForContext,
+                availableHoursLeft: contextSnapshot.availableHoursLeft,
+                upcomingTasks: contextSnapshot.upcomingTasks,
+            });
+            
             const agentResponse = await invokeAgentService(agentPayload);
 
             await appendChatMessage({
@@ -873,23 +1080,50 @@ app.post(
             });
 
             let goalPreviewId = session.goalPreviewId ?? null;
-            if (agentResponse.action?.type === 'save_preview') {
-                const previewPayload =
-                    (agentResponse.action.payload?.goalPreview as Record<string, unknown> | undefined) ??
-                    (agentResponse.action.payload as Record<string, unknown> | undefined) ??
-                    {};
+            let sessionActive = agentResponse.state?.sessionActive ?? session.sessionActive;
+            let updatedContext = agentResponse.context ?? contextSnapshot;
+            let responseAction = agentResponse.action
+                ? {
+                      ...agentResponse.action,
+                      payload: agentResponse.action.payload
+                          ? { ...(agentResponse.action.payload as Record<string, unknown>) }
+                          : undefined,
+                  }
+                : undefined;
+            const actionPayload = (responseAction?.payload as Record<string, unknown> | undefined) ?? undefined;
+
+            if (responseAction?.type === 'save_preview') {
+                const preview = extractPreviewPayload(actionPayload);
                 const previewRecord = await upsertGoalPreview({
-                    id: typeof previewPayload?.id === 'string' ? (previewPayload.id as string) : undefined,
+                    id: preview.id,
                     userId,
                     sessionId: session.id,
-                    data: previewPayload,
+                    data: preview.data,
                 });
                 goalPreviewId = previewRecord.id;
-            }
-
-            let sessionActive = agentResponse.state?.sessionActive ?? session.sessionActive;
-            if (agentResponse.action?.type === 'finalize_goal') {
+                responseAction = {
+                    ...responseAction,
+                    payload: {
+                        ...(responseAction.payload as Record<string, unknown> | undefined),
+                        goalPreviewId,
+                    },
+                };
+            } else if (responseAction?.type === 'finalize_goal') {
+                const finalizePayload = actionPayload ?? {};
+                const finalizeResult = await finalizeGoalPlanFromAgentPayload(user, finalizePayload);
+                goalPreviewId = finalizeResult.goalPreviewId ?? goalPreviewId;
                 sessionActive = false;
+                responseAction = {
+                    ...responseAction,
+                    payload: {
+                        ...(responseAction.payload as Record<string, unknown> | undefined),
+                        goalId: finalizeResult.goal.id,
+                        milestoneIds: finalizeResult.milestoneIds,
+                        taskIds: finalizeResult.taskIds,
+                        goalPreviewId,
+                    },
+                };
+                updatedContext = await buildUserContext(user);
             }
 
             const updatedSession = await updateSession(session.id, {
@@ -897,13 +1131,15 @@ app.post(
                 iteration: agentResponse.state?.iteration ?? session.iteration + 1,
                 goalPreviewId: agentResponse.state?.goalPreviewId ?? goalPreviewId,
                 sessionActive,
-                context: agentResponse.context ?? context,
+                context: updatedContext,
             });
+            
+            console.log(agentResponse.action.payload?.goalPreview);
 
             res.json({
                 sessionId: updatedSession.id,
                 reply: agentResponse.reply,
-                action: agentResponse.action,
+                action: responseAction ?? agentResponse.action,
                 state: {
                     state: updatedSession.state,
                     iteration: updatedSession.iteration,
