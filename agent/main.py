@@ -4,11 +4,17 @@ import os
 from pathlib import Path
 from typing import List
 
+# import logging
+
 import uvicorn
 from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
 
-BASE_DIR = Path(__file__).resolve().parent
+# # Configure logging
+# logging.basicConfig(level=logging.INFO)
+# logger = logging.getLogger(__name__)
+
+BASE_DIR = os.path.join(os.path.dirname(__file__), "goal_planning_agent")
 SESSION_SERVICE_URI = os.getenv("SESSION_SERVICE_URI", "sqlite:///./sessions.db")
 ALLOWED_ORIGINS_RAW = os.getenv(
     "ALLOW_ORIGINS",

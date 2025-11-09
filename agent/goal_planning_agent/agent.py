@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 import json
 import os
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -11,11 +11,13 @@ from google.genai import types
 
 from .llm import GeminiJsonResponder, GeminiPlanner
 
-# load_dotenv()
+load_dotenv()
 _MODEL_NAME = os.getenv("AGENT_LLM_MODEL")
 _API_KEY = os.getenv("GOOGLE_API_KEY")
 _STRICT = os.getenv("AGENT_STRICT_LLM", "false").lower() in {"1", "true", "yes"}
 _APP_NAME = "goal_planning_agent"
+
+
 
 _planner = GeminiPlanner(model_name=_MODEL_NAME, api_key=_API_KEY)
 _json_responder = GeminiJsonResponder(model_name=_MODEL_NAME, api_key=_API_KEY)

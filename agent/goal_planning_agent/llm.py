@@ -10,14 +10,21 @@ try:
 except Exception:  # pragma: no cover - local dev without google-genai
     genai = None  # type: ignore
 
+_GENAI_CLIENT: genai.Client | None = None
+
+def get_genai_client(api_key: str) -> genai.Client:
+    global _GENAI_CLIENT
+    if _GENAI_CLIENT is None:
+        print("🔗 Initializing persistent Google GenAI client...", flush=True)
+        _GENAI_CLIENT = genai.Client(api_key=api_key)
+    return _GENAI_CLIENT
 
 SYSTEM_PROMPT = (
-    "You are Gritto's gaol planning specialist. Generate structured JSON that matches the GoalPreview schema.\n"
-    "The JSON must contain keys: goal, milestones (list), and optional id/summary.\n"
-    "- goal: object with title, description (optional), category (optional).\n"
-    "- milestones: list of objects with title, tasks (list).\n"
-    "- tasks: list of objects with title, description (optional).\n"
-    "Return only JSON. No markdown."
+        "You are a goal planning assistant. Given the user's message, the current proposed plan, "
+        "remaining available hours, and upcoming tasks, generate or refine a structured goal plan "
+        "in valid JSON conforming to the GoalPreview schema. Ensure that new tasks do not exceed "
+        "available hours and do not overlap with existing upcomingTasks. "
+        "Output JSON under the key 'proposed_plan'."
 )
 
 
@@ -28,10 +35,11 @@ class PlanGenerationError(RuntimeError):
 def _init_model(model_name: Optional[str], api_key: Optional[str]):
     if not genai or not api_key:
         return None
-    genai.configure(api_key=api_key)
+    client = get_genai_client(api_key)
     try:
-        return genai.GenerativeModel(model_name or "gemini-1.5-pro-latest")
-    except Exception:  # pragma: no cover - defer to fallback
+        return client.models
+    except Exception as e:  # pragma: no cover - defer to fallback
+        raise KeyError(e)
         return None
 
 
@@ -65,21 +73,23 @@ class GeminiPlanner:
     ) -> Dict[str, Any]:
         if not self._model:
             return self._fallback_plan(message, existing_plan)
-
         prompt = self._build_prompt(message, context, existing_plan)
         try:
-            response = await asyncio.to_thread(self._model.generate_content, prompt)
+            response = await asyncio.to_thread(self._model.generate_content, model='gemini-2.5-flash', contents=prompt)
         except Exception as exc:  # pragma: no cover - network path
             if strict:
                 raise PlanGenerationError(f"Gemini invocation failed: {exc}") from exc
             return self._fallback_plan(message, existing_plan)
 
+        print("DEBUG: gemini invoked!", flush=True)
+        print(response, flush=True)
         text = _extract_text(response)
         plan = _extract_json(text)
         if plan is None:
             if strict:
                 raise PlanGenerationError("Gemini did not return valid JSON plan.")
             return self._fallback_plan(message, existing_plan)
+        print("DEBUG: plan conform format!", flush=True)
         return plan
 
     def _build_prompt(
@@ -89,7 +99,7 @@ class GeminiPlanner:
         existing_plan: Optional[Dict[str, Any]],
     ) -> str:
         goals = context.get("existingGoals") or []
-        events = context.get("calendarEvents") or []
+        # events = context.get("calendarEvents") or []
         existing_json = json.dumps(existing_plan, ensure_ascii=False, indent=2) if existing_plan else "null"
 
         return (
@@ -97,7 +107,7 @@ class GeminiPlanner:
             f"User message: {message}\n"
             f"Existing plan JSON: {existing_json}\n"
             f"Existing goals: {json.dumps(goals, ensure_ascii=False)}\n"
-            f"Calendar events: {json.dumps(events, ensure_ascii=False)}\n"
+            # f"Calendar events: {json.dumps(events, ensure_ascii=False)}\n"
             "Respond with updated GoalPreview JSON only."
         )
 
@@ -179,7 +189,7 @@ class GeminiJsonResponder:
 
     async def _invoke_json(self, prompt: str) -> Optional[Dict[str, Any]]:
         try:
-            response = await asyncio.to_thread(self._model.generate_content, prompt)
+            response = await asyncio.to_thread(self._model.generate_content, model='gemini-2.5-flash', contents=prompt)
         except Exception:  # pragma: no cover - network path
             return None
         text = _extract_text(response)
