@@ -3,11 +3,17 @@ from __future__ import annotations
 from dotenv import load_dotenv
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from google.adk.agents import BaseAgent, SequentialAgent
 from google.adk.events import Event, EventActions
 from google.genai import types
+
+# from google.adk.agents.callback_context import CallbackContext
+# from google.adk.models.llm_request import LlmRequest
+# from google.adk.models.llm_response import LlmResponse
+from google.adk.agents.invocation_context import InvocationContext
 
 from .llm import GeminiJsonResponder, GeminiPlanner
 
@@ -77,66 +83,124 @@ def _get_attr(obj: Any, key: str) -> Optional[Any]:
     return getattr(obj, key, None)
 
 
-def _extract_user_message(ctx) -> str:
-    content = _get_input_obj(ctx)
-    if content is None:
-        return ""
+# def _extract_user_message(ctx) -> str:
+#     content = _get_input_obj(ctx)
+#     if content is None:
+#         return ""
 
-    direct_message = getattr(content, "message", None)
-    if isinstance(direct_message, str) and direct_message.strip():
-        return direct_message.strip()
+#     direct_message = getattr(content, "message", None)
+#     if isinstance(direct_message, str) and direct_message.strip():
+#         return direct_message.strip()
 
-    text_attr = getattr(content, "text", None)
-    if isinstance(text_attr, str) and text_attr.strip():
-        return text_attr.strip()
+#     text_attr = getattr(content, "text", None)
+#     if isinstance(text_attr, str) and text_attr.strip():
+#         return text_attr.strip()
 
-    for part in _get_parts(ctx):
-        text_value = _part_text(part)
-        if text_value and text_value.strip():
-            return text_value.strip()
-    return ""
+#     for part in _get_parts(ctx):
+#         text_value = _part_text(part)
+#         if text_value and text_value.strip():
+#             return text_value.strip()
+#     return ""
 
 
-def _extract_context(ctx) -> Dict[str, Any]:
-    parts = _get_parts(ctx)
+# def _extract_context(ctx) -> Dict[str, Any]:
+#     parts = _get_parts(ctx)
+
+#     def _call_args(name: str) -> Dict[str, Any]:
+#         for part in parts:
+#             fn = _get_function_call(part)
+#             if not fn:
+#                 continue
+#             fn_name = _get_attr(fn, "name")
+#             if fn_name != name:
+#                 continue
+#             args = _get_attr(fn, "args")
+#             if isinstance(args, dict):
+#                 return args
+#         return {}
+
+#     goal_preview_ctx = _call_args("goal_preview_context")
+#     time_ctx = _call_args("time_context")
+#     task_ctx = _call_args("task_context")
+
+#     return {
+#         "goalPreview": goal_preview_ctx.get("goalPreview"),
+#         "availableHoursLeft": time_ctx.get("availableHoursLeft"),
+#         "upcomingTasks": task_ctx.get("upcomingTasks", []),
+#     }
+
+
+# def _sync_state_with_context(state: Dict[str, Any], context: Dict[str, Any]) -> None:
+#     if not context:
+#         return
+
+#     state["context"] = _deepcopy_json(context)
+
+#     goal_preview = context.get("goalPreview")
+#     if goal_preview:
+#         state["proposed_plan"] = _deepcopy_json(goal_preview)
+#         iteration = goal_preview.get("iteration")
+#         if isinstance(iteration, int):
+#             state["iteration"] = iteration
+
+def _my_before_model_cb(ctx: InvocationContext) -> None:
+    """Populate session state with structured context before each LLM call."""
+
+    content = getattr(ctx, "user_content", None)
+    parts = getattr(content, "parts", None) if content is not None else None
+    if not isinstance(parts, list):
+        parts = []
 
     def _call_args(name: str) -> Dict[str, Any]:
         for part in parts:
-            fn = _get_function_call(part)
+            fn = getattr(part, "function_call", None)
+            if fn is None and isinstance(part, dict):
+                fn = part.get("function_call")
             if not fn:
                 continue
-            fn_name = _get_attr(fn, "name")
+            fn_name = getattr(fn, "name", None) if not isinstance(fn, dict) else fn.get("name")
             if fn_name != name:
                 continue
-            args = _get_attr(fn, "args")
+            args = getattr(fn, "args", None) if not isinstance(fn, dict) else fn.get("args")
             if isinstance(args, dict):
                 return args
         return {}
 
-    goal_preview_ctx = _call_args("goal_preview_context")
-    time_ctx = _call_args("time_context")
-    task_ctx = _call_args("task_context")
+    goal_preview_args = _call_args("goal_preview_context")
+    time_args = _call_args("time_context")
+    task_args = _call_args("task_context")
 
-    return {
-        "goalPreview": goal_preview_ctx.get("goalPreview"),
-        "availableHoursLeft": time_ctx.get("availableHoursLeft"),
-        "upcomingTasks": task_ctx.get("upcomingTasks", []),
-    }
+    goal_preview = goal_preview_args.get("goalPreview")
+    available_hours = time_args.get("availableHoursLeft")
+    upcoming_tasks = task_args.get("upcomingTasks")
 
+    state = ctx.session.state
+    if goal_preview is not None:
+        state["goal_preview"] = goal_preview
+    if available_hours is not None:
+        state["available_hours_left"] = available_hours
+    if isinstance(upcoming_tasks, list):
+        state["upcoming_tasks"] = upcoming_tasks
 
-def _sync_state_with_context(state: Dict[str, Any], context: Dict[str, Any]) -> None:
-    if not context:
-        return
+    # Mirrors the shape used elsewhere in the workflow so downstream agents
+    # can rely on a single `context` dict within session state.
+    context_payload = state.get("context")
+    if not isinstance(context_payload, dict):
+        context_payload = {}
+    if goal_preview is not None:
+        context_payload["goalPreview"] = goal_preview
+    if available_hours is not None:
+        context_payload["availableHoursLeft"] = available_hours
+    if isinstance(upcoming_tasks, list):
+        context_payload["upcomingTasks"] = upcoming_tasks
+    state["context"] = context_payload
+    state["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-    state["context"] = _deepcopy_json(context)
-
-    goal_preview = context.get("goalPreview")
-    if goal_preview:
-        state["proposed_plan"] = _deepcopy_json(goal_preview)
+    # Preserve compatibility with plan iteration state.
+    if goal_preview and isinstance(goal_preview, dict):
         iteration = goal_preview.get("iteration")
         if isinstance(iteration, int):
             state["iteration"] = iteration
-
 
 class CheckApprovalAgent(BaseAgent):
     def __init__(self, responder: GeminiJsonResponder, *, strict: bool = False) -> None:
@@ -149,12 +213,12 @@ class CheckApprovalAgent(BaseAgent):
 
     async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
         state = ctx.session.state
-        print("=======DEBUG input: ", ctx.user_content.parts[0].text)
         incoming_message = ctx.user_content.parts[0].text
         state["user_goal_text"] = incoming_message
 
-        context = _extract_context(ctx)
-        _sync_state_with_context(state, context)
+        print("=======DEBUG ctx: ", ctx)
+        _my_before_model_cb(ctx)
+        print("=======DEBUG updated state: ", ctx.session.state)
 
         has_plan = bool(state.get("proposed_plan"))
 
@@ -237,6 +301,26 @@ class PlanAgent(BaseAgent):
         )
         self._planner = planner
         self._strict = strict
+        self.output_schema = {
+            "goal": {
+                "title": "string",
+                "description": "string",
+                "milestones": [
+                    {
+                        "title": "string",
+                        "description": "string",
+                        "tasks": [
+                            {
+                                "title": "string",
+                                "description": "string",
+                                "date": "Timestamp",
+                                "estimatedHours": "number"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
 
     async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:  # type: ignore[override]
         state = ctx.session.state
