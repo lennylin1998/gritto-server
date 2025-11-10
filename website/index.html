@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Gritto is the AI agent that turns natural language goals into milestone plans, respects your schedule, loops feedback endlessly, and auto-logs tasks for tracking."
+    />
+    <title>Gritto • AI Goal Planning App</title>
+    <link rel="preload" href="assets/gritto-icon.svg" as="image" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__gradient" aria-hidden="true"></div>
+      <nav class="hero__nav">
+        <div class="brand">
+          <img src="assets/gritto-icon.svg" alt="Gritto icon" class="brand__icon" />
+          <span class="brand__name">Gritto</span>
+        </div>
+        <a class="btn btn--ghost" href="#download">Download APK</a>
+      </nav>
+      <div class="hero__content">
+        <div class="hero__copy">
+          <p class="eyebrow">AI agent for execution</p>
+          <h1>Turn a messy idea into a schedule-aware execution plan.</h1>
+          <p>
+            Drop any natural language goal, then let the agent shape milestones, respect your working hours,
+            invite limitless feedback loops, and push the final task stack straight into your tracker.
+          </p>
+          <div class="hero__cta">
+            <a id="download" class="btn btn--primary" href="https://example.com/gritto.apk">Download APK</a>
+            <button class="btn btn--ghost" type="button">See how it works</button>
+          </div>
+        </div>
+        <div class="hero__mock">
+          <div class="mock-card">
+            <img src="assets/gritto-icon.svg" alt="Gritto icon highlight" />
+            <p class="mock-card__title">Plan Preview</p>
+            <ul>
+              <li>Agent drafts milestones from your raw input</li>
+              <li>Plan scan blocks off real working hours</li>
+              <li>Feedback loop refines until you approve</li>
+              <li>Tasks auto-inserted into your workspace</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="pillars">
+        <article>
+          <h3>Milestones from plain language</h3>
+          <p>
+            Paste a brainstorm or speak a voice note—Gritto&apos;s agent extracts objectives, writes concrete milestones,
+            and breaks them into actionable tasks automatically.
+          </p>
+        </article>
+        <article>
+          <h3>Respect your schedule</h3>
+          <p>
+            Set your working hours, and capacity constraints are read instantly so the plan lands in the
+            windows you actually have.
+          </p>
+        </article>
+        <article>
+          <h3>Looping feedback forever</h3>
+          <p>
+            Keep iterating with natural language feedback—tighten scope, reorder tasks, or adjust dependencies as often as
+            you want until it feels dialed in.
+          </p>
+        </article>
+        <article>
+          <h3>Auto-tracking handoff</h3>
+          <p>
+            Once you approve the plan, Gritto inserts every task into your database so task tracking stay synced without manual entry.
+          </p>
+        </article>
+      </section>
+
+      <section class="feature-grid">
+        <div class="feature-grid__text">
+          <p class="eyebrow">Workflow snapshot</p>
+          <h2>One continuous loop from idea intake to database-ready tasks.</h2>
+          <p>
+            Describe what you want to achieve, validate how it fits into your week, iterate through refinements, and send
+            the approved stack straight into your system of record—no context lost along the way.
+          </p>
+          <div class="chips">
+            <span>Natural input</span><span>Schedule aware</span><span>Feedback loop</span><span>Auto insert</span>
+          </div>
+        </div>
+        <div class="feature-grid__card">
+          <div class="card__header">
+            <span>Loop in action</span>
+            <span class="chip chip--pink">Live</span>
+          </div>
+          <div class="card__body">
+            <div class="task">
+              <div>
+                <p class="task__title">Input</p>
+                <p class="task__meta">Agent parses your natural language goal</p>
+              </div>
+              <span class="task__status">Milestones drafted</span>
+            </div>
+            <div class="task">
+              <div>
+                <p class="task__title">Schedule check</p>
+                <p class="task__meta">Working hours + conflicts analyzed</p>
+              </div>
+              <span class="task__status">Plan adjusted</span>
+            </div>
+            <div class="task">
+              <div>
+                <p class="task__title">Feedback loop</p>
+                <p class="task__meta">You iterate in plain language</p>
+              </div>
+              <span class="task__status">Version 5 saved</span>
+            </div>
+            <div class="task">
+              <div>
+                <p class="task__title">Auto insert</p>
+                <p class="task__meta">Approved tasks sent to database</p>
+              </div>
+              <span class="task__status">Tracking live</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <section class="cta">
+      <div>
+        <p class="eyebrow">Ship plans faster</p>
+        <h2>Let Gritto curate, calibrate, and log every task for you.</h2>
+        <p>
+          Download the Android build, speak a goal into the agent, and watch it respect your current task schedule, iterate endlessly,
+          and hand off a database-ready task list.
+        </p>
+      </div>
+      <a class="btn btn--primary" href="https://example.com/gritto.apk">Download APK</a>
+    </section>
+
+    <footer>
+      <small>© <span id="year"></span> Gritto. Crafted with intentionality.</small>
+    </footer>
+
+    <script>
+      document.getElementById('year').textContent = new Date().getFullYear();
+    </script>
+  </body>
+</html>
