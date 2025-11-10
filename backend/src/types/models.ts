@@ -19,8 +19,9 @@ export interface GoalRecord {
     description?: string | null;
     status: GoalStatus;
     color?: number | null;
-    minHoursPerWeek: number;
+    hoursPerWeek: number;
     priority: number;
+    milestones: string[];
     createdAt: string;
     updatedAt: string;
 }
@@ -34,6 +35,7 @@ export interface MilestoneRecord {
     title: string;
     description?: string | null;
     status: MilestoneStatus;
+    tasks: string[];
     createdAt: string;
     updatedAt: string;
 }

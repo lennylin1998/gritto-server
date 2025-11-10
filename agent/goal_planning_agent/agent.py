@@ -198,21 +198,17 @@ def _my_before_model_cb(ctx: InvocationContext) -> None:
         if isinstance(iteration, int):
             state["iteration"] = iteration
 
-class IsoTimestamp(BaseModel):
-    timestamp: datetime = Field(description="UTC time in ISO8601 format with 'Z' suffix")
+class PlanTaskSchema(BaseModel):
+    title: str
+    description: str
+    date: datetime = Field(description="UTC time in ISO8601 format with 'Z' suffix")
+    estimatedHours: float
 
-    @field_validator("timestamp", mode="before")
+    @field_validator("date", mode="before")
     def enforce_utc(cls, v):
         if isinstance(v, datetime):
             return v.astimezone(timezone.utc)
         return datetime.fromisoformat(v.replace("Z", "+00:00"))
-
-class PlanTaskSchema(BaseModel):
-    title: str
-    description: str
-    date: IsoTimestamp
-    estimatedHours: float
-
 
 class PlanMilestoneSchema(BaseModel):
     title: str
@@ -223,7 +219,7 @@ class PlanMilestoneSchema(BaseModel):
 class PlanGoalSchema(BaseModel):
     title: str
     description: str
-
+    hoursPerWeek: int
 
 class PlanOutputSchema(BaseModel):
     goal: PlanGoalSchema
@@ -246,8 +242,10 @@ def _plan_instruction(ctx: ReadonlyContext) -> str:
     context_json = json.dumps(snapshot, ensure_ascii=False, indent=2, default=str)
     return (
         "You are a goal planning assistant. Use the latest user input together with the context JSON below "
-        "to generate or refine a single coherent goal plan. Respect availableHoursLeft, avoid overlapping "
-        "upcomingTasks, and keep milestones/task sequencing realistic for the provided timestamp. "
+        "to generate or refine a single coherent goal plan."
+        "When planning, first set hoursPerWeek for the goal, and respect availableHoursLeft."
+        "The task estimatedHours should follow the hoursPerWeek. "
+        "Avoid overlapping upcomingTasks, and keep milestones/task sequencing realistic for the provided timestamp. "
         "Always return STRICT JSON that matches the output_schema (top-level keys: goal, milestones and iteration)."
         f"\n\nPlanning context:\n{context_json}\n"
     )

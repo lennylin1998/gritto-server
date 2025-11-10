@@ -63,6 +63,7 @@ const port = Number(process.env.PORT) || 8080;
 const GOAL_STATUSES: GoalStatus[] = ['active', 'completed', 'paused', 'archived'];
 const MILESTONE_STATUSES: MilestoneStatus[] = ['blocked', 'in_progress', 'finished'];
 const MAX_AVAILABLE_HOURS = 168;
+const DEFAULT_GOAL_COLOR = 0x00ff00; // #00FF00 green fallback when agent omits color
 
 app.use(morgan('dev'));
 app.use(express.json());
@@ -88,8 +89,9 @@ function serializeGoal(goal: GoalRecord) {
         description: goal.description ?? null,
         status: goal.status,
         color: goal.color ?? null,
-        minHoursPerWeek: goal.minHoursPerWeek,
+        hoursPerWeek: goal.hoursPerWeek,
         priority: goal.priority,
+        milestones: goal.milestones ?? [],
         createdAt: goal.createdAt,
         updatedAt: goal.updatedAt,
     };
@@ -103,6 +105,7 @@ function serializeMilestone(milestone: MilestoneRecord) {
         title: milestone.title,
         description: milestone.description ?? null,
         status: milestone.status,
+        tasks: milestone.tasks ?? [],
         createdAt: milestone.createdAt,
         updatedAt: milestone.updatedAt,
     };
@@ -121,6 +124,16 @@ function serializeTask(task: TaskRecord) {
         status: task.done ? 'done' : 'not_yet_done',
         createdAt: task.createdAt,
         updatedAt: task.updatedAt,
+    };
+}
+
+function serializeGoalPreview(preview: GoalPreviewRecord) {
+    return {
+        id: preview.id,
+        sessionId: preview.sessionId,
+        data: preview.data ?? {},
+        createdAt: preview.createdAt,
+        updatedAt: preview.updatedAt,
     };
 }
 
@@ -151,7 +164,9 @@ function isValidDay(value: string): boolean {
 }
 
 function toDayRange(day: string): { start: string; end: string } {
-    return { start: day, end: day };
+    const start = new Date(`${day}T00:00:00.000Z`).toISOString();
+    const end = new Date(`${day}T23:59:59.999Z`).toISOString();
+    return { start, end };
 }
 
 async function assertOwnedGoal(goalId: string, userId: string): Promise<GoalRecord> {
@@ -199,7 +214,7 @@ async function collectActiveGoalSummaries(
         .map((goal) => ({
             goalId: goal.id,
             title: goal.title,
-            weeklyHours: goal.minHoursPerWeek,
+            weeklyHours: goal.hoursPerWeek,
         }));
 }
 
@@ -249,7 +264,7 @@ function validateIsoDate(value: unknown): string {
 type AgentGoalPlan = {
     title?: string;
     description?: string;
-    minHoursPerWeek?: number;
+    hoursPerWeek?: number;
     priority?: number;
     color?: number;
 };
@@ -318,14 +333,14 @@ function computePlanTaskHours(milestones: AgentMilestonePlan[]): number {
     }, 0);
 }
 
-function coerceIsoDayString(value: unknown): string {
+function coerceIsoDateTimeString(value: unknown): string {
     if (typeof value === 'string' && value.trim().length > 0) {
         const parsed = new Date(value);
         if (!Number.isNaN(parsed.valueOf())) {
-            return parsed.toISOString().slice(0, 10);
+            return parsed.toISOString();
         }
     }
-    return new Date().toISOString().slice(0, 10);
+    return new Date().toISOString();
 }
 
 async function finalizeGoalPlanFromAgentPayload(
@@ -345,21 +360,17 @@ async function finalizeGoalPlanFromAgentPayload(
     const goalTitle =
         typeof goalPlan.title === 'string' && goalPlan.title.trim().length > 0 ? goalPlan.title.trim() : 'Untitled Goal';
     const description = typeof goalPlan.description === 'string' ? goalPlan.description : null;
-    const planHours =
-        typeof goalPlan.minHoursPerWeek === 'number' && Number.isFinite(goalPlan.minHoursPerWeek)
-            ? Math.max(0, goalPlan.minHoursPerWeek)
-            : computePlanTaskHours(milestonePlans);
-    const priority =
-        typeof goalPlan.priority === 'number' && Number.isFinite(goalPlan.priority)
-            ? Math.trunc(goalPlan.priority)
-            : 0;
-    const color = typeof goalPlan.color === 'number' && Number.isFinite(goalPlan.color) ? goalPlan.color : null;
+    const planHours = goalPlan.hoursPerWeek;
+    const existingGoals = await listGoals({ userId: user.id, status: 'all' });
+    const priority = existingGoals.length; // push finalized goals to the bottom of the stack
+    const color =
+        typeof goalPlan.color === 'number' && Number.isFinite(goalPlan.color) ? goalPlan.color : DEFAULT_GOAL_COLOR;
 
     const existingActiveHours = await sumActiveGoalHours(user.id);
-    const totalRequiredHours = existingActiveHours + planHours;
+    const totalRequiredHours = existingActiveHours + (planHours ?? 0);
     if (totalRequiredHours > user.availableHoursPerWeek) {
         const conflicts = await collectActiveGoalSummaries(user.id);
-        conflicts.push({ goalId: 'pending', title: goalTitle, weeklyHours: planHours });
+        conflicts.push({ goalId: 'pending', title: goalTitle, weeklyHours: planHours ?? 0 });
         throw new ApiError(
             409,
             `Available hours (${user.availableHoursPerWeek}h/week) are insufficient for current active goals (${totalRequiredHours}h/week with new goal).`,
@@ -371,11 +382,11 @@ async function finalizeGoalPlanFromAgentPayload(
         );
     }
 
-    const goal = await createGoal({
+    let goal = await createGoal({
         userId: user.id,
         title: goalTitle,
         description,
-        minHoursPerWeek: planHours,
+        hoursPerWeek: planHours ?? 0,
         priority,
         color,
     });
@@ -401,9 +412,7 @@ async function finalizeGoalPlanFromAgentPayload(
             typeof milestonePlan.status === 'string' && isValidMilestoneStatus(milestonePlan.status)
                 ? (milestonePlan.status as MilestoneStatus)
                 : undefined;
-        if (milestoneStatus && milestoneStatus !== milestone.status) {
-            await updateMilestone(milestone.id, { status: milestoneStatus });
-        }
+        const milestoneTaskIds: string[] = [];
 
         const tasks = Array.isArray(milestonePlan.tasks) ? milestonePlan.tasks : [];
         for (const taskPlan of tasks) {
@@ -416,7 +425,7 @@ async function finalizeGoalPlanFromAgentPayload(
                 typeof taskPlan?.estimatedHours === 'number' && Number.isFinite(taskPlan.estimatedHours)
                     ? Math.max(0, taskPlan.estimatedHours)
                     : 0;
-            const date = coerceIsoDayString(taskPlan?.date);
+            const date = coerceIsoDateTimeString(taskPlan?.date);
             const createdTask = await createTask({
                 goalId: goal.id,
                 milestoneId: milestone.id,
@@ -427,11 +436,20 @@ async function finalizeGoalPlanFromAgentPayload(
                 estimatedHours,
             });
             taskIds.push(createdTask.id);
+            milestoneTaskIds.push(createdTask.id);
             if (taskPlan?.done) {
                 await setTaskDone(createdTask.id, true);
             }
         }
+
+        const milestoneUpdates: Parameters<typeof updateMilestone>[1] = { tasks: milestoneTaskIds };
+        if (milestoneStatus && milestoneStatus !== milestone.status) {
+            milestoneUpdates.status = milestoneStatus;
+        }
+        await updateMilestone(milestone.id, milestoneUpdates);
     }
+
+    goal = await updateGoal(goal.id, { milestones: milestoneIds });
 
     return { goal, milestoneIds, taskIds, goalPreviewId: previewRecord?.id ?? previewId };
 }
@@ -579,12 +597,12 @@ app.post('/v1/goals', authMiddleware, async (req: Request, res: Response, next: 
         const user = await findUserById(userId);
         assert(user, 404, 'User not found.');
 
-        const { title, description, minHoursPerWeek, priority, color } = req.body ?? {};
+        const { title, description, hoursPerWeek, priority, color } = req.body ?? {};
         assert(typeof title === 'string' && title.trim().length > 0, 400, 'title is required.');
         assert(
-            typeof minHoursPerWeek === 'number' && Number.isFinite(minHoursPerWeek) && minHoursPerWeek >= 0,
+            typeof hoursPerWeek === 'number' && Number.isFinite(hoursPerWeek) && hoursPerWeek >= 0,
             400,
-            'minHoursPerWeek must be a non-negative number.'
+            'hoursPerWeek must be a non-negative number.'
         );
         assert(typeof priority === 'number' && Number.isInteger(priority), 400, 'priority must be an integer.');
         if (color !== undefined) {
@@ -592,7 +610,7 @@ app.post('/v1/goals', authMiddleware, async (req: Request, res: Response, next: 
         }
 
         const existingHours = await sumActiveGoalHours(userId);
-        const totalHours = existingHours + minHoursPerWeek;
+        const totalHours = existingHours + hoursPerWeek;
         if (totalHours > user.availableHoursPerWeek) {
             const conflicts = await collectActiveGoalSummaries(userId);
             throw new ApiError(
@@ -610,7 +628,7 @@ app.post('/v1/goals', authMiddleware, async (req: Request, res: Response, next: 
             userId,
             title: title.trim(),
             description: typeof description === 'string' ? description : null,
-            minHoursPerWeek,
+            hoursPerWeek,
             priority,
             color: color ?? null,
         });
@@ -669,7 +687,7 @@ app.patch('/v1/goals/:goalId', authMiddleware, async (req: Request, res: Respons
         assert(userId, 401, 'Unauthorized');
         const goal = await assertOwnedGoal(req.params.goalId, userId);
 
-        const { title, description, status, minHoursPerWeek, priority, color } = req.body ?? {};
+        const { title, description, status, hoursPerWeek, priority, color } = req.body ?? {};
         const updates: Parameters<typeof updateGoal>[1] = {};
         let hasUpdate = false;
 
@@ -688,13 +706,13 @@ app.patch('/v1/goals/:goalId', authMiddleware, async (req: Request, res: Respons
             updates.status = status;
             hasUpdate = true;
         }
-        if (minHoursPerWeek !== undefined) {
+        if (hoursPerWeek !== undefined) {
             assert(
-                typeof minHoursPerWeek === 'number' && Number.isFinite(minHoursPerWeek) && minHoursPerWeek >= 0,
+                typeof hoursPerWeek === 'number' && Number.isFinite(hoursPerWeek) && hoursPerWeek >= 0,
                 400,
-                'minHoursPerWeek must be a non-negative number.'
+                'hoursPerWeek must be a non-negative number.'
             );
-            updates.minHoursPerWeek = minHoursPerWeek;
+            updates.hoursPerWeek = hoursPerWeek;
             hasUpdate = true;
         }
         if (priority !== undefined) {
@@ -714,7 +732,7 @@ app.patch('/v1/goals/:goalId', authMiddleware, async (req: Request, res: Respons
         assert(user, 404, 'User not found.');
 
         const nextStatus = (updates.status ?? goal.status) as GoalStatus;
-        const nextHours = updates.minHoursPerWeek ?? goal.minHoursPerWeek;
+        const nextHours = updates.hoursPerWeek ?? goal.hoursPerWeek;
         if (nextStatus === 'active') {
             const otherHours = await sumActiveGoalHours(userId, goal.id);
             const totalHours = otherHours + nextHours;
@@ -1052,6 +1070,24 @@ app.get(
     }
 );
 
+app.get('/v1/goal-previews/:goalPreviewId', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const userId = req.user?.userId;
+        assert(userId, 401, 'Unauthorized');
+        const goalPreviewId =
+            typeof req.params.goalPreviewId === 'string' ? req.params.goalPreviewId.trim() : '';
+        assert(goalPreviewId.length > 0, 400, 'goalPreviewId is required.');
+
+        const preview = await findGoalPreviewById(goalPreviewId);
+        assert(preview && preview.userId === userId, 404, `Goal preview '${goalPreviewId}' not found.`);
+
+        console.log(preview)
+        res.json({ data: serializeGoalPreview(preview) });
+    } catch (error) {
+        next(error);
+    }
+});
+
 app.post(
     '/v1/agent/goal/session:message',
     authMiddleware,
@@ -1127,8 +1163,8 @@ app.post(
 
             if (responseAction?.type === 'save_preview') {
                 const preview = extractPreviewPayload(actionPayload);
-                console.log("GOAL PREVIEW EXTRACTED DATA:");
-                console.log(preview.data);
+                // console.log("GOAL PREVIEW EXTRACTED DATA:");
+                // console.log(preview.data);
                 const previewRecord = await upsertGoalPreview({
                     id: preview.id,
                     userId,
@@ -1169,7 +1205,7 @@ app.post(
                 context: updatedContext,
             });
             
-            console.log(agentResponse.action.payload?.goalPreview);
+            // console.log(agentResponse.action.payload?.goalPreview);
 
             res.json({
                 sessionId: updatedSession.id,

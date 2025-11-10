@@ -262,7 +262,7 @@ Validation
 	•	Reject changes to immutable fields (email, id, createdAt).
 	•	Validate availableHoursPerWeek as positive integer (0–168).
 	•	Check if user’s available hours can support all active goals:
-	•	availableHoursPerWeek >= sum(goal.minHoursPerWeek for status='active')
+	•	availableHoursPerWeek >= sum(goal.hoursPerWeek for status='active')
 
 ⸻
 
@@ -345,7 +345,7 @@ GoalModel	Firestore collection: Goal used to compute weekly time requirement
 
 Goal aggregation logic:
 
-totalGoalHours = sum(goal.minHoursPerWeek for goal in active_goals)
+totalGoalHours = sum(goal.hoursPerWeek for goal in active_goals)
 if newAvailableHours < totalGoalHours:
     throw ConflictError(409)
 
@@ -402,9 +402,9 @@ Function Description
 
 GoalController.createGoal(req, res)
 	•	Extracts userId from req.user.
-	•	Validates input fields (title, minHoursPerWeek, priority).
+	•	Validates input fields (title, hoursPerWeek, priority).
 	•	Fetches user’s available weekly hours.
-	•	Calculates total minHoursPerWeek from all active goals + the new goal.
+	•	Calculates total hoursPerWeek from all active goals + the new goal.
 	•	Rejects if total exceeds user capacity.
 	•	Creates goal in Firestore and returns the record.
 
@@ -499,7 +499,7 @@ Side Effects
 
 Purpose
 
-Update existing goal metadata (e.g., title, color, minHoursPerWeek, status).
+Update existing goal metadata (e.g., title, color, hoursPerWeek, status).
 
 ⸻
 
@@ -508,9 +508,9 @@ Function Description
 GoalController.updateGoal(req, res)
 	•	Fetches target goal by ID and ensures ownership.
 	•	Validates updatable fields:
-	•	title, status, color, minHoursPerWeek, priority.
+	•	title, status, color, hoursPerWeek, priority.
 	•	If status changes to "active" or hours increase:
-	•	Compute total minHoursPerWeek across all active goals.
+	•	Compute total hoursPerWeek across all active goals.
 	•	Compare against user’s availableHoursPerWeek.
 	•	Reject with 409 Conflict if total exceeds capacity.
 	•	Apply update and refresh updatedAt.
@@ -583,7 +583,7 @@ GET /v1/goals/{goalId}/metrics	getGoalMetrics	GoalModel, MilestoneModel, TaskMod
 
 🧩 Cross-Domain Interactions
 	•	When activating or creating new goals:
-	•	Requires User.availableHoursPerWeek >= sum(activeGoals.minHoursPerWeek).
+	•	Requires User.availableHoursPerWeek >= sum(activeGoals.hoursPerWeek).
 
 ⸻
 

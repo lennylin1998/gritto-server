@@ -14,8 +14,8 @@
     "userId": "string (reference to User)",
     "title": "string",
     "description": "string",
-    "context": "string",
-    "minHoursPerWeek": "number",
+    "context": "string (optional)",
+    "hoursPerWeek": "number (optional)",
     "priority": "number",
     "color": "number",
     "status": "enum('active', 'completed')",
@@ -75,13 +75,10 @@
     "id": "string",
     "userId": "string (reference to User)",
     "sessionId": "string (reference to Chat session)",
-    "goalDraft": {
+    "goal": {
       "title": "string",
       "description": "string (optional)",
-      "context": "string (optional)",
-      "priority": "number (optional)",
-      "minHoursPerWeek": "number (optional)",
-      "color": "number (optional)",
+      "hoursPerWeek": "number",
       "milestones": [
         {
           "title": "string",
@@ -90,8 +87,8 @@
             {
               "title": "string",
               "description": "string (optional)",
-              "date": "Timestamp (optional)",
-              "estimatedHours": "number (optional)"
+              "date": "Timestamp",
+              "estimatedHours": "number"
             }
           ]
         }

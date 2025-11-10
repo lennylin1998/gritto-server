@@ -16,8 +16,11 @@ function mapGoal(doc: FirebaseFirestore.DocumentSnapshot): GoalRecord {
         description: (data.description as string | null | undefined) ?? null,
         status: (data.status as GoalStatus | undefined) ?? 'active',
         color: (data.color as number | null | undefined) ?? null,
-        minHoursPerWeek: (data.minHoursPerWeek as number | undefined) ?? 0,
+        hoursPerWeek: (data.hoursPerWeek as number | undefined) ?? 0,
         priority: (data.priority as number | undefined) ?? 0,
+        milestones: Array.isArray(data.milestones)
+            ? (data.milestones as string[])
+            : [],
         createdAt: (data.createdAt as string | undefined) ?? new Date().toISOString(),
         updatedAt: (data.updatedAt as string | undefined) ?? new Date().toISOString(),
     };
@@ -36,9 +39,10 @@ export interface CreateGoalInput {
     userId: string;
     title: string;
     description?: string | null;
-    minHoursPerWeek: number;
+    hoursPerWeek: number;
     priority: number;
     color?: number | null;
+    milestones?: string[];
 }
 
 export async function createGoal(input: CreateGoalInput): Promise<GoalRecord> {
@@ -50,9 +54,10 @@ export async function createGoal(input: CreateGoalInput): Promise<GoalRecord> {
         title: input.title,
         description: input.description ?? null,
         status: 'active' as GoalStatus,
-        minHoursPerWeek: input.minHoursPerWeek,
+        hoursPerWeek: input.hoursPerWeek,
         priority: input.priority,
         color: input.color ?? null,
+        milestones: Array.isArray(input.milestones) ? input.milestones : [],
         createdAt: now,
         updatedAt: now,
     };
@@ -79,9 +84,10 @@ export interface UpdateGoalInput {
     title?: string;
     description?: string | null;
     status?: GoalStatus;
-    minHoursPerWeek?: number;
+    hoursPerWeek?: number;
     priority?: number;
     color?: number | null;
+    milestones?: string[];
 }
 
 export async function updateGoal(goalId: string, updates: UpdateGoalInput): Promise<GoalRecord> {
@@ -101,14 +107,17 @@ export async function updateGoal(goalId: string, updates: UpdateGoalInput): Prom
     if (updates.status !== undefined) {
         payload.status = updates.status;
     }
-    if (updates.minHoursPerWeek !== undefined) {
-        payload.minHoursPerWeek = updates.minHoursPerWeek;
+    if (updates.hoursPerWeek !== undefined) {
+        payload.hoursPerWeek = updates.hoursPerWeek;
     }
     if (updates.priority !== undefined) {
         payload.priority = updates.priority;
     }
     if (updates.color !== undefined) {
         payload.color = updates.color;
+    }
+    if (updates.milestones !== undefined) {
+        payload.milestones = updates.milestones;
     }
     await docRef.update(payload);
     return mapGoal(await docRef.get());
@@ -125,7 +134,7 @@ export async function sumActiveGoalHours(userId: string, excludeGoalId?: string)
         .filter((doc) => doc.id !== excludeGoalId)
         .reduce((total, doc) => {
             const data = doc.data();
-            const hours = (data.minHoursPerWeek as number | undefined) ?? 0;
+            const hours = (data.hoursPerWeek as number | undefined) ?? 0;
             return total + hours;
         }, 0);
 }

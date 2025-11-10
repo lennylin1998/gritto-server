@@ -27,7 +27,7 @@ SYSTEM_PROMPT = (
         "There should be at least one tasks under a milestone."
         "Ensure that new tasks do not exceed "
         "available hours per week and do not overlap with existing upcomingTasks. "
-        "Curated plan based on current timestamp."
+        "Curated plan based on current timestamp, assuming users want to start right away. "
         "Output JSON under the key 'proposed_plan'."
 )
 

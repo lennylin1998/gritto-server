@@ -16,6 +16,7 @@ function mapMilestone(doc: FirebaseFirestore.DocumentSnapshot): MilestoneRecord 
         title: (data.title as string | undefined) ?? '',
         description: (data.description as string | null | undefined) ?? null,
         status: (data.status as MilestoneStatus | undefined) ?? 'blocked',
+        tasks: Array.isArray(data.tasks) ? (data.tasks as string[]) : [],
         createdAt: (data.createdAt as string | undefined) ?? new Date().toISOString(),
         updatedAt: (data.updatedAt as string | undefined) ?? new Date().toISOString(),
     };
@@ -41,6 +42,7 @@ export interface CreateMilestoneInput {
     title: string;
     description?: string | null;
     parentMilestoneId?: string | null;
+    tasks?: string[];
 }
 
 export async function createMilestone(input: CreateMilestoneInput): Promise<MilestoneRecord> {
@@ -53,6 +55,7 @@ export async function createMilestone(input: CreateMilestoneInput): Promise<Mile
         description: input.description ?? null,
         status: 'blocked' as MilestoneStatus,
         parentMilestoneId: input.parentMilestoneId ?? null,
+        tasks: Array.isArray(input.tasks) ? input.tasks : [],
         createdAt: now,
         updatedAt: now,
     };
@@ -64,6 +67,7 @@ export interface UpdateMilestoneInput {
     title?: string;
     description?: string | null;
     status?: MilestoneStatus;
+    tasks?: string[];
 }
 
 export async function updateMilestone(id: string, updates: UpdateMilestoneInput): Promise<MilestoneRecord> {
@@ -82,6 +86,9 @@ export async function updateMilestone(id: string, updates: UpdateMilestoneInput)
     }
     if (updates.status !== undefined) {
         payload.status = updates.status;
+    }
+    if (updates.tasks !== undefined) {
+        payload.tasks = updates.tasks;
     }
     await docRef.update(payload);
     return mapMilestone(await docRef.get());
