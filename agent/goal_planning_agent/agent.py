@@ -39,44 +39,44 @@ def _deepcopy_json(value: Dict[str, Any]) -> Dict[str, Any]:
             return value
 
 
-def _get_input_obj(ctx) -> Any:
-    return getattr(ctx, "input", None)
+# def _get_input_obj(ctx) -> Any:
+#     return getattr(ctx, "input", None)
 
 
-def _get_parts(ctx) -> List[Any]:
-    content = _get_input_obj(ctx)
-    parts = getattr(content, "parts", None)
-    if isinstance(parts, list):
-        return parts
-    return []
+# def _get_parts(ctx) -> List[Any]:
+#     content = _get_input_obj(ctx)
+#     parts = getattr(content, "parts", None)
+#     if isinstance(parts, list):
+#         return parts
+#     return []
 
 
-def _part_text(part: Any) -> Optional[str]:
-    if hasattr(part, "text"):
-        text_value = getattr(part, "text")
-        if isinstance(text_value, str):
-            return text_value
-    if isinstance(part, dict):
-        text_value = part.get("text")
-        if isinstance(text_value, str):
-            return text_value
-    return None
+# def _part_text(part: Any) -> Optional[str]:
+#     if hasattr(part, "text"):
+#         text_value = getattr(part, "text")
+#         if isinstance(text_value, str):
+#             return text_value
+#     if isinstance(part, dict):
+#         text_value = part.get("text")
+#         if isinstance(text_value, str):
+#             return text_value
+#     return None
 
 
-def _get_function_call(part: Any) -> Optional[Any]:
-    if hasattr(part, "function_call"):
-        return getattr(part, "function_call")
-    if isinstance(part, dict):
-        return part.get("function_call")
-    return None
+# def _get_function_call(part: Any) -> Optional[Any]:
+#     if hasattr(part, "function_call"):
+#         return getattr(part, "function_call")
+#     if isinstance(part, dict):
+#         return part.get("function_call")
+#     return None
 
 
-def _get_attr(obj: Any, key: str) -> Optional[Any]:
-    if obj is None:
-        return None
-    if isinstance(obj, dict):
-        return obj.get(key)
-    return getattr(obj, key, None)
+# def _get_attr(obj: Any, key: str) -> Optional[Any]:
+#     if obj is None:
+#         return None
+#     if isinstance(obj, dict):
+#         return obj.get(key)
+#     return getattr(obj, key, None)
 
 
 # def _extract_user_message(ctx) -> str:
@@ -220,10 +220,10 @@ class PlanGoalSchema(BaseModel):
     title: str
     description: str
     hoursPerWeek: int
+    milestones: List[PlanMilestoneSchema] = Field(..., min_length=1)
 
 class PlanOutputSchema(BaseModel):
     goal: PlanGoalSchema
-    milestones: List[PlanMilestoneSchema] = Field(..., min_length=1)
     iteration: Optional[int] = None
 
 

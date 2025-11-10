@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 try:
@@ -11,6 +12,16 @@ except Exception:  # pragma: no cover - local dev without google-genai
     genai = None  # type: ignore
 
 _GENAI_CLIENT: genai.Client | None = None
+
+
+def _json_default(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _json_dump(value: Any, *, indent: int | None = None) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=indent, default=_json_default)
 
 def get_genai_client(api_key: str) -> genai.Client:
     global _GENAI_CLIENT
@@ -104,13 +115,13 @@ class GeminiPlanner:
     ) -> str:
         goals = context.get("existingGoals") or []
         # events = context.get("calendarEvents") or []
-        existing_json = json.dumps(existing_plan, ensure_ascii=False, indent=2) if existing_plan else "null"
+        existing_json = _json_dump(existing_plan, indent=2) if existing_plan else "null"
 
         return (
             f"{SYSTEM_PROMPT}\n"
             f"User message: {message}\n"
             f"Existing plan JSON: {existing_json}\n"
-            f"Existing goals: {json.dumps(goals, ensure_ascii=False)}\n"
+            f"Existing goals: {json.dumps(goals, ensure_ascii=False, default=_json_default)}\n"
             # f"Calendar events: {json.dumps(events, ensure_ascii=False)}\n"
             "Respond with updated GoalPreview JSON only."
         )
@@ -119,7 +130,7 @@ class GeminiPlanner:
     def _fallback_plan(message: str, existing_plan: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         base_plan: Dict[str, Any] = {}
         if isinstance(existing_plan, dict):
-            base_plan = json.loads(json.dumps(existing_plan))  # deep copy
+            base_plan = json.loads(_json_dump(existing_plan))  # deep copy
         if "goal" not in base_plan:
             base_plan["goal"] = {"title": message.strip() or "Untitled Goal"}
         if "milestones" not in base_plan or not base_plan["milestones"]:
@@ -201,7 +212,7 @@ class GeminiJsonResponder:
         return _extract_json(text)
 
     def _build_check_prompt(self, *, message: str, state_snapshot: Dict[str, Any]) -> str:
-        state_json = json.dumps(state_snapshot, ensure_ascii=False, indent=2)
+        state_json = _json_dump(state_snapshot, indent=2)
         return (
             "You are CheckApprovalAgent for the Gritto workflow.\n"
             "Decide if the user approves the current plan or requires more planning.\n"
@@ -216,8 +227,8 @@ class GeminiJsonResponder:
         )
 
     def _build_finalize_prompt(self, *, state_snapshot: Dict[str, Any], plan: Dict[str, Any]) -> str:
-        state_json = json.dumps(state_snapshot, ensure_ascii=False, indent=2)
-        plan_json = json.dumps(plan or {}, ensure_ascii=False, indent=2)
+        state_json = _json_dump(state_snapshot, indent=2)
+        plan_json = _json_dump(plan or {}, indent=2)
         return (
             "You are FinalizeAgent for the Gritto GoalPlanning workflow.\n"
             "Produce the final reply, backend action, and next state as strict JSON.\n"

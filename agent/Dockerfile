@@ -17,7 +17,7 @@ COPY main.py ./main.py
 USER appuser
 ENV PATH="/home/appuser/.local/bin:$PATH"
 
-ENV AGENT_LLM_MODEL="gemini-2.5-pro" \
+ENV AGENT_LLM_MODEL="gemini-2.0-flash" \
     AGENT_STRICT_LLM="true"
 
 EXPOSE 8080
